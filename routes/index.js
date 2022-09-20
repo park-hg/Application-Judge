@@ -6,6 +6,7 @@ router.get("/", controller.mainView);
 
 // 채점 서버
 router.post('/judge', controller.judgeCode);
+// router.post('/judge', controller.judgeLambda);
 
 
 module.exports = router;
