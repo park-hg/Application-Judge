@@ -1,160 +1,151 @@
-require("dotenv").config();
 const fs = require("fs");
-const { spawnSync } = require("child_process");
-const { totalInputDict, totalOutputDict } = require("./loadText");
+const { spawn } = require("child_process");
+const { totalInputDict, totalOutputDict } = require("./readText");
 const uuid = require("uuid");
 
+require("dotenv").config();
+
 const extension = {
-  Python: "py",
-  JavaScript: "js",
-  C: "c",
-  "C++": "cpp",
-  Java: "java",
+	Python: "py",
+	JavaScript: "js",
+	C: "c",
+	"C++": "cpp",
+	Java: "java",
 };
 
 const command = {
-  Python: "python3",
-  JavaScript: "node",
-  C: "c",
-  "C++": "cpp",
-  Java: "java",
+	Python: "python3",
+	JavaScript: "node",
+	C: "c",
+	"C++": "cpp",
+	Java: "java",
 };
 
-async function createExecFile(userId, problemId, lang, code) {
-  const dir = `./code/submission/${problemId}`;
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, {
-      recursive: true,
-    });
-  }
+function promisifiedSpawn(srcfile, problemId, lang, idx) {
+	let output, error;
+	return new Promise((resolve, reject) => {
+		try {
+			const child = spawn(command[lang], [srcfile], {
+				// excute with guest permissions
+				uid: parseInt(process.env.UID),
+			});
 
-  const filename = uuid.v4();
-  fs.writeFileSync(
-    `${dir}/${filename}.${extension[lang]}`,
-    code,
-    {'mode': 0o755},
-    function (err) {
-      if (err !== null) {
-        console.log(`Fail to create file ${err.code}`);
-        return false;
-      }
-    }
-  );
-  return filename;
+			// timeout: 3000,
+			let timeout = setTimeout(() => {
+				output = "시간초과";
+				child.kill("SIGKILL");
+			}, 3000);
+
+			child.stdin.write(totalInputDict[problemId][idx]);
+			child.stdin.end();
+
+			child.stderr.on("data", (err) => {
+				if (err) {
+					error = err.toString();
+				}
+			});
+
+			child.stdout.on("data", (data) => {
+				// 미리 구해놓은 정답 파일 크기의 2배를 넘어가면 출력초과
+				if (Buffer.byteLength(data) > Math.max(Buffer.byteLength(totalOutputDict[problemId][idx]) * 2, 1000)) {
+					output = "출력초과";
+					child.kill("SIGKILL");
+				} else output = data.toString().trim();
+			});
+
+			child.on("error", (err) => {
+				console.log(err);
+			});
+
+			child.on("close", (code) => {
+				if (code === 0 || !code) resolve(output);
+				else resolve(error);
+			});
+
+			child.on("exit", () => clearTimeout(timeout));
+		} catch (e) {
+			console.log("process spawn failed!", e);
+		}
+	});
+}
+
+async function createExecFile(lang, code) {
+	const filename = uuid.v4();
+	try {
+		fs.writeFile(`./code/submission/${filename}.${extension[lang]}`, code, { mode: 0o755 }, (err) => {
+			if (err) throw err;
+		});
+
+		return filename;
+	} catch (err) {
+		console.error(`Fail to create file ${err}`);
+	}
 }
 
 async function execCode(userId, problemId, lang, filename) {
-  const srcfile = `./code/submission/${problemId}/${filename}.${extension[lang]}`;
-  const outputs = [];
-  const errors = [];
-  for (let i = 0; i < totalInputDict[problemId].length; i++) {
-    const child = spawnSync(command[lang], [srcfile], {
-      input: totalInputDict[problemId][i],
-      /* 미리 구해놓은 정답 파일 크기의 2배를 넘어가면 출력초과 */
-      maxBuffer: Math.max(totalOutputDict[problemId][i].length * 2, 1000),
-      /* timeout 3s */
-      timeout: 3000,
-      /* excute with guest permissions */
-      uid: parseInt(process.env.UID),
-    });
-    // 시간초과, 출력초과 처리
-    if (child.error) {
-      const error = child.error.toString().split(" ")[3];
-      if (error === 'ENOBUFS') outputs.push("출력초과");
-      else if (error === 'ETIMEDOUT') outputs.push("시간초과");
-      else outputs.push(child.error.toString().split(" ")[3]);
-      continue;
-    }
-    if (child.stdout) {
-      outputs.push(child.stdout.toString().trim());
-      const error = child.stderr.toString();
-      if (child.stderr.length > 0) {
-        const errLog = [];
-        for (e of error.split("\n")) {
-          if (e.includes("Error")) {
-            errLog.push(e);
-          }
-        }
-        errors.push(errLog.join("\n"));
-      }
-    }
-  }
-  return { outputs, errors };
+	const srcfile = `code/submission/${filename}.${extension[lang]}`;
+	const inputLength = totalInputDict[problemId].length;
+	const processes = new Array(inputLength);
+	for (let i = 0; i < inputLength; i++) {
+		processes[i] = promisifiedSpawn(srcfile, problemId, lang, i);
+	}
+	let results = await Promise.all(processes);
+	return results;
 }
 
-async function compareOutput(problemId, userOutput) {
-  const results = [];
-  try {
-    for (let i = 0; i < totalOutputDict[problemId].length; i++) {
-      results.push(userOutput[i].trim() === totalOutputDict[problemId][i]);
-    }
-    return results;
-  } catch (e) {
-    console.log("compare output error", e);
-  }
+async function computeResults(problemId, userOutput) {
+	const results = [];
+	try {
+		for (let i = 0; i < totalOutputDict[problemId].length; i++) {
+			results.push(userOutput[i] == totalOutputDict[problemId][i]);
+		}
+		return results;
+	} catch (e) {
+		console.log("compare output error", e);
+	}
 }
 
 async function deleteFile(userId, problemId, lang, filename) {
-  const dir = `./code/submission/${problemId}/`;
-  fs.unlink(`${dir}/${filename}.${extension[lang]}`, function (err) {
-    if (err !== null) {
-      console.log(`Fail to delete file ${err.code}`);
-      return false;
-    }
-  });
-  return true;
+	fs.unlink(`./code/submission/${filename}.${extension[lang]}`, function (err) {
+		if (err !== null) {
+			console.log(`Fail to delete file ${err.code}`);
+			return false;
+		}
+	});
+	return true;
 }
 
 async function judgeCode(userId, problemId, lang, code) {
-  try {
-    if (
-      userId === undefined ||
-      userId === "" ||
-      problemId === undefined ||
-      lang === undefined ||
-      code === undefined
-    ) {
-      return {
-        results: [],
-        passRate: [],
-        msg: [
-          `you passed undefined params!!! userId: ${userId}, problemId: ${problemId}, lang: ${lang}, code: ${code}`,
-        ],
-      };
-    }
-    const filename = await createExecFile(userId, problemId, lang, code);
-    const { outputs, errors } = await execCode(
-      userId,
-      problemId,
-      lang,
-      filename
-    );
-    const results = await compareOutput(problemId, outputs);
-    await deleteFile(userId, problemId, lang, filename);
-    if (errors.length !== 0) {
-      return {
-        results,
-        passRate: 0,
-        msg: errors,
-      };
-    }
+	try {
+		if (userId === undefined || userId === "" || problemId === undefined || lang === undefined || code === undefined) {
+			return {
+				results: [],
+				passRate: [],
+				msg: [`you passed undefined params!!! userId: ${userId}, problemId: ${problemId}, lang: ${lang}, code: ${code}`],
+			};
+		}
+		const filename = await createExecFile(lang, code);
+		const outputs = await execCode(userId, problemId, lang, filename);
+		const results = await computeResults(problemId, outputs);
 
-    let passRate = results.reduce((a, b) => a + b, 0);
-    passRate = (passRate / results.length) * 100;
+		let passRate = results.reduce((a, b) => a + b, 0);
+		passRate = (passRate / results.length) * 100;
 
-    return {
-      results,
-      passRate,
-      msg: outputs,
-    };
-  } catch (e) {
-    console.log(e);
-    return {
-      results: [],
-      passRate: -1,
-      msg: e,
-    };
-  }
+		await deleteFile(userId, problemId, lang, filename);
+
+		return {
+			results,
+			passRate,
+			msg: outputs,
+		};
+	} catch (e) {
+		console.log(e);
+		return {
+			results: [],
+			passRate: -1,
+			msg: e,
+		};
+	}
 }
 
 module.exports = judgeCode;
