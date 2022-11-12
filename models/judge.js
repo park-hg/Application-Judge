@@ -82,7 +82,7 @@ async function createExecFile(lang, code) {
 	}
 }
 
-async function execCode(userId, problemId, lang, filename) {
+async function execCode(problemId, lang, filename) {
 	const srcfile = `code/submission/${filename}.${extension[lang]}`;
 	const inputLength = totalInputDict[problemId].length;
 	const processes = new Array(inputLength);
@@ -105,7 +105,7 @@ async function computeResults(problemId, userOutput) {
 	}
 }
 
-async function deleteFile(userId, problemId, lang, filename) {
+async function deleteFile(lang, filename) {
 	fs.unlink(`./code/submission/${filename}.${extension[lang]}`, function (err) {
 		if (err !== null) {
 			console.log(`Fail to delete file ${err.code}`);
@@ -125,13 +125,13 @@ async function judgeCode(userId, problemId, lang, code) {
 			};
 		}
 		const filename = await createExecFile(lang, code);
-		const outputs = await execCode(userId, problemId, lang, filename);
+		const outputs = await execCode(problemId, lang, filename);
 		const results = await computeResults(problemId, outputs);
 
 		let passRate = results.reduce((a, b) => a + b, 0);
 		passRate = (passRate / results.length) * 100;
 
-		await deleteFile(userId, problemId, lang, filename);
+		await deleteFile(lang, filename);
 
 		return {
 			results,
