@@ -1,5 +1,5 @@
 const fs = require("fs");
-const { spawn } = require("child_process");
+const { spawn, exec } = require("child_process");
 const { totalInputDict, totalOutputDict } = require("./readText");
 const uuid = require("uuid");
 
@@ -11,6 +11,7 @@ const extension = {
 	C: "c",
 	"C++": "cpp",
 	Java: "java",
+	Go: "go",
 };
 
 const command = {
@@ -19,17 +20,23 @@ const command = {
 	C: "c",
 	"C++": "cpp",
 	Java: "java",
+	Go: "",
 };
 
 function promisifiedSpawn(srcfile, problemId, lang, idx) {
 	let output, error;
 	return new Promise((resolve, reject) => {
 		try {
-			const child = spawn(command[lang], [srcfile], {
-				// excute with guest permissions
-				uid: parseInt(process.env.UID),
-			});
-
+			let child;
+			if (lang === "Python" || lang === "JavaScript") {
+				child = spawn(command[lang], [srcfile], {
+					// excute with guest permissions
+					// uid: parseInt(process.env.UID),
+				});
+			} else {
+				child = spawn(srcfile);
+			}
+			
 			// timeout: 3000,
 			let timeout = setTimeout(() => {
 				output = "시간초과";
@@ -82,12 +89,33 @@ async function createExecFile(lang, code) {
 	}
 }
 
-async function execCode(problemId, lang, filename) {
-	const srcfile = `code/submission/${filename}.${extension[lang]}`;
+async function compileFile(lang, srcfile, filename) {
+	return new Promise((resolve, reject) => {
+		try {
+			if (lang === 'Go') {
+				const process = exec(`go build -o ./code/submission ${srcfile}`);
+
+				process.on("close", (code) => {
+					console.log('close', code);
+					if (code === 0 || !code) resolve(`./code/submission/${filename}`);
+					else resolve("compile error!");
+				})
+			} else {
+				resolve(srcfile);
+			}
+		} catch (e) {
+			console.log("process spawn failed!", e);
+		}
+	});	
+}
+
+async function execCode(problemId, lang, srcPath) {
+	// let srcfile = `code/submission/${filename}.${extension[lang]}`;
+	// if (lang === "Go") srcfile = `./${filename}`;
 	const inputLength = totalInputDict[problemId].length;
 	const processes = new Array(inputLength);
 	for (let i = 0; i < inputLength; i++) {
-		processes[i] = promisifiedSpawn(srcfile, problemId, lang, i);
+		processes[i] = promisifiedSpawn(srcPath, problemId, lang, i);
 	}
 	let results = await Promise.all(processes);
 	return results;
@@ -105,8 +133,8 @@ async function computeResults(problemId, userOutput) {
 	}
 }
 
-async function deleteFile(lang, filename) {
-	fs.unlink(`./code/submission/${filename}.${extension[lang]}`, function (err) {
+async function deleteFile(lang, srcPath) {
+	fs.unlink(srcPath, function (err) {
 		if (err !== null) {
 			console.log(`Fail to delete file ${err.code}`);
 			return false;
@@ -125,13 +153,15 @@ async function judgeCode(userId, problemId, lang, code) {
 			};
 		}
 		const filename = await createExecFile(lang, code);
-		const outputs = await execCode(problemId, lang, filename);
+		let srcPath = `./code/submission/${filename}.${extension[lang]}`; 
+		srcPath = await compileFile(lang, srcPath, filename);
+		const outputs = await execCode(problemId, lang, srcPath);
 		const results = await computeResults(problemId, outputs);
 
 		let passRate = results.reduce((a, b) => a + b, 0);
 		passRate = (passRate / results.length) * 100;
 
-		await deleteFile(lang, filename);
+		await deleteFile(lang, srcPath);
 
 		return {
 			results,

@@ -1,11 +1,11 @@
-import ast
 import json
 import sys
 from io import StringIO
 
+inputs = json.load(open('./inputs.txt'))
+
 def lambda_handler(event, context):
 
-    inputs = json.load(open('./inputs.txt'))
     payload = json.loads(event.get("body"), strict=False)
 
     print(inputs[payload["problemId"]])  
